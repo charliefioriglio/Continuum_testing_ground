@@ -1,6 +1,6 @@
 import numpy as np
 from tqdm import tqdm
-from build_mode import cartesian_to_spherical, coefficient
+from build_mode import build_directional_wavefunction
 from CuO_do import (
     build_DO,
     DO_coeffs_b1_L,
@@ -8,12 +8,11 @@ from CuO_do import (
     DO_coeffs_b2_L,
     DO_coeffs_b2_R,
     DO_coeffs_a1_R,
-    DO_coeffs_a1_L
+    DO_coeffs_a1_L,
 )
+
 import matplotlib.pyplot as plt
 from ang_grid import repulsion_orientations
-from angular import build_angular_functions
-from radial import radial_function
 
 # ---------------------------------------------
 # Define Grid
@@ -39,23 +38,17 @@ hartree = 27.2114  # eV
 # Build continuum
 # ---------------------------------------------
 def continuum(k_hat, D, L_max, eKE, X, Y, Z):
-    """Build continuum field via full point-dipole expansion."""
+    """Build the summed continuum for a specific emission direction."""
 
-    r_grid, theta_grid, phi_grid = cartesian_to_spherical(X, Y, Z)
-    psi = np.zeros_like(X, dtype=complex)
-    k = np.sqrt(2.0 * eKE)
-
-    for lam in range(-L_max, L_max + 1):
-        omega_funcs, eigvals = build_angular_functions(D, lam, L_max, theta_grid, phi_grid)
-        for N, eigval in enumerate(eigvals):
-            if eigval < -0.25 or np.isnan(eigval):
-                continue
-            L_N = 0.5 * (-1.0 + np.sqrt(1.0 + 4.0 * eigval))
-            R_N = radial_function(L_N, k, r_grid)
-            C = coefficient(D, lam, N, k_hat, l_max=L_max)
-            psi += C * R_N * omega_funcs[N]
-
-    return psi
+    return build_directional_wavefunction(
+        D,
+        k_hat,
+        eKE,
+        X,
+        Y,
+        Z,
+        l_max=L_max,
+    )
 
 # ---------------------------------------------
 # Build rotation matrix from Euler angles (ZYZ convention)
@@ -133,10 +126,10 @@ if __name__ == '__main__':
 
     ang_grid = repulsion_orientations(n_orientations=N_ang)
 
-    E_eV = np.linspace(0.01, 0.51, 10)
+    E_eV = np.linspace(0.01, 1.51, 20)
     L_max = 5
 
-    D_values = np.array([0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3])
+    D_values = np.array([0.0, 0.3])
     degeneracies = [
         (DO_coeffs_b1_L, DO_coeffs_b1_R),
         (DO_coeffs_b2_L, DO_coeffs_b2_R)
