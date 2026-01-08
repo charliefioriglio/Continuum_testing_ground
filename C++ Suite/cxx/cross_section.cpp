@@ -124,7 +124,8 @@ std::vector<double> CrossSectionCalculator::ComputeTotalCrossSection(
     int num_alpha = 3;
     
     // [energy][lm][alpha]
-    std::vector<std::vector<std::vector<PartialWaveAccumulator>>> partial_sums(
+    // Global accumulator (merged results from threads)
+    std::vector<std::vector<std::vector<PartialWaveAccumulator>>> final_partial_sums(
         num_energies, 
         std::vector<std::vector<PartialWaveAccumulator>>(
             num_lm,
@@ -132,79 +133,91 @@ std::vector<double> CrossSectionCalculator::ComputeTotalCrossSection(
         )
     );
     
-    // Loop Grid
-    int idx = 0;
-    for (int ix = 0; ix < nx; ++ix) {
-        double x = x0 + ix * step;
-        for (int iy = 0; iy < ny; ++iy) {
-             double y = y0 + iy * step;
-             for (int iz = 0; iz < nz; ++iz) {
-                double z = z0 + iz * step;
-                
-                double phi_L = phi_L_vals[idx];
-                double phi_R = phi_R_vals[idx];
-                idx++;
-                
-                if (std::abs(phi_L) < 1e-15 && std::abs(phi_R) < 1e-15) continue;
-                
-                double r_sq = x*x + y*y + z*z;
-                if (r_sq < 1e-18) continue;
-                double r = std::sqrt(r_sq);
-                
-                double theta = std::acos(z/r);
-                double phi_ang = std::atan2(y, x);
-                
-                double dip_x = x;
-                double dip_y = y;
-                double dip_z = z;
-                
-                // For each LM
-                int lm_idx = 0;
-                for(int l=0; l<=l_max; ++l) {
+    // Parallel Region
+    #pragma omp parallel
+    {
+        // Thread-local Accumulator
+        auto thread_partial_sums = final_partial_sums; // Copy structure (zeros)
+        // Reset just in case copy not zero
+        for(auto& e_vec : thread_partial_sums)
+            for(auto& lm_vec : e_vec)
+                for(auto& a_val : lm_vec) a_val = {0.0, 0.0};
+        
+        #pragma omp for
+        for (int ix = 0; ix < nx; ++ix) {
+            double x = x0 + ix * step;
+            for (int iy = 0; iy < ny; ++iy) {
+                 double y = y0 + iy * step;
+                 for (int iz = 0; iz < nz; ++iz) {
+                    double z = z0 + iz * step;
                     
-                    // Precompute Ylm for this grid point (reused across energies)
-                    // But we need Ylm loop inside here.
+                    int idx = ix * (ny * nz) + iy * nz + iz;
+                    double phi_L = phi_L_vals[idx];
+                    double phi_R = phi_R_vals[idx];
                     
-                    for(int m=-l; m<=l; ++m) {
-                         std::complex<double> Ylm_conj = std::conj(MathSpecial::SphericalHarmonicY(l, m, theta, phi_ang));
-                         
-                         // Precompute term common to all energies: phi * conj(Y) * r_alpha
-                         // For each alpha
-                         std::complex<double> termL_base = phi_L * Ylm_conj;
-                         std::complex<double> termR_base = phi_R * Ylm_conj;
-                         
-                         // Optimization: Inner Loop over Energies
-                         for(int e=0; e<num_energies; ++e) {
-                             if(k_values[e] <= 0) continue;
+                    if (std::abs(phi_L) < 1e-15 && std::abs(phi_R) < 1e-15) continue;
+                    
+                    double r_sq = x*x + y*y + z*z;
+                    if (r_sq < 1e-18) continue;
+                    double r = std::sqrt(r_sq);
+                    
+                    double theta = std::acos(z/r);
+                    double phi_ang = std::atan2(y, x);
+                    
+                    double dip_x = x;
+                    double dip_y = y;
+                    double dip_z = z;
+                    
+                    // For each LM
+                    int lm_idx = 0;
+                    for(int l=0; l<=l_max; ++l) {
+                        for(int m=-l; m<=l; ++m) {
+                             std::complex<double> Ylm_conj = std::conj(MathSpecial::SphericalHarmonicY(l, m, theta, phi_ang));
                              
-                             double k = k_values[e];
-                             double jl = MathSpecial::SphericalBesselJ(l, k*r); // Most expensive part potentially?
-                             // Optimization: jl depends only on (l, k*r).
+                             std::complex<double> termL_base = phi_L * Ylm_conj;
+                             std::complex<double> termR_base = phi_R * Ylm_conj;
                              
-                             double factor = jl * dV; // Include dV here
-                             
-                             // Integrate for each alpha
-                             // Alpha 0 (x)
-                             partial_sums[e][lm_idx][0].val_L += termL_base * dip_x * factor;
-                             partial_sums[e][lm_idx][0].val_R += termR_base * dip_x * factor;
-                             
-                             // Alpha 1 (y)
-                             partial_sums[e][lm_idx][1].val_L += termL_base * dip_y * factor;
-                             partial_sums[e][lm_idx][1].val_R += termR_base * dip_y * factor;
-                             
-                             // Alpha 2 (z)
-                             partial_sums[e][lm_idx][2].val_L += termL_base * dip_z * factor;
-                             partial_sums[e][lm_idx][2].val_R += termR_base * dip_z * factor;
-                         }
-                         
-                         lm_idx++;
+                             for(int e=0; e<num_energies; ++e) {
+                                 if(k_values[e] <= 0) continue;
+                                 
+                                 double k = k_values[e];
+                                 double jl = MathSpecial::SphericalBesselJ(l, k*r);
+                                 double factor = jl * dV;
+                                 
+                                 // Alpha 0 (x)
+                                 thread_partial_sums[e][lm_idx][0].val_L += termL_base * dip_x * factor;
+                                 thread_partial_sums[e][lm_idx][0].val_R += termR_base * dip_x * factor;
+                                 
+                                 // Alpha 1 (y)
+                                 thread_partial_sums[e][lm_idx][1].val_L += termL_base * dip_y * factor;
+                                 thread_partial_sums[e][lm_idx][1].val_R += termR_base * dip_y * factor;
+                                 
+                                 // Alpha 2 (z)
+                                 thread_partial_sums[e][lm_idx][2].val_L += termL_base * dip_z * factor;
+                                 thread_partial_sums[e][lm_idx][2].val_R += termR_base * dip_z * factor;
+                             }
+                             lm_idx++;
+                        }
+                    }
+                 }
+            }
+        } // End Grid Loop (Parallel)
+        
+        // Merge thread results
+        #pragma omp critical
+        {
+            for(int e=0; e<num_energies; ++e) {
+                for(int lm=0; lm<num_lm; ++lm) {
+                    for(int a=0; a<num_alpha; ++a) {
+                        final_partial_sums[e][lm][a].val_L += thread_partial_sums[e][lm][a].val_L;
+                        final_partial_sums[e][lm][a].val_R += thread_partial_sums[e][lm][a].val_R;
                     }
                 }
-             }
+            }
         }
-    }
+    } // End Parallel
     
-    // Final Assembly
+    // Final Assembly (Use merged results)
     for(int e=0; e<num_energies; ++e) {
         if(k_values[e] <= 0) {
             results.push_back(0.0);
@@ -221,8 +234,8 @@ std::vector<double> CrossSectionCalculator::ComputeTotalCrossSection(
         for(int lm=0; lm<num_lm; ++lm) {
             double sum_alpha = 0.0;
             for(int alpha=0; alpha<3; ++alpha) {
-                std::complex<double> amp_L = partial_sums[e][lm][alpha].val_L;
-                std::complex<double> amp_R = partial_sums[e][lm][alpha].val_R;
+                std::complex<double> amp_L = final_partial_sums[e][lm][alpha].val_L;
+                std::complex<double> amp_R = final_partial_sums[e][lm][alpha].val_R;
                 
                 sum_alpha += (std::conj(amp_L) * amp_R).real();
             }

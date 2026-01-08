@@ -23,6 +23,14 @@ public:
         const std::vector<double>& photoelectron_energies_ev
     );
 
+    static std::vector<BetaResult> CalculateBetaAnalytic(
+        const Dyson& dyson_L,
+        const Dyson& dyson_R,
+        const UniformGrid& grid,
+        const std::vector<double>& photoelectron_energies_ev,
+        int l_max = 3
+    );
+
 private:
     static std::complex<double> ComputeNumericalMatrixElement(
         const Dyson& dyson,

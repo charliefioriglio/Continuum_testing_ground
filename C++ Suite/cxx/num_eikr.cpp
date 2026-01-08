@@ -112,192 +112,114 @@ void NumEikr::calc_eikr_sq(const UniformGrid& labgrid,
     
     EzRotation rot;
     
-    for (int v = 0; v < n_orientations; ++v) {
-        const auto& p = anggrid.points[v];
-        // ezDyson uses numeric averaging with RotnMatr(NUM, 0, pi.beta, pi.gamma)
-        // See eikr.C: "RotnMatr rot(avgcklm,0,bj,aj);" where bj=Beta, aj=Gamma from my AngleGrid analysis.
-        // My AngleGrid stores: alpha=0, beta=p.beta, gamma=p.gamma.
-        // So I pass these to the rotation matrix.
-        // The rotation is Active ZXZ Transpose (for Lab -> Mol).
-        rot.set_euler_zxz_transpose(p.alpha, p.beta, p.gamma);
-        double weight = p.weight;
+    // Thread-local accumulation
+    // Outer parallel region
+    #pragma omp parallel
+    {
+        // Thread-private accumulators
+        std::vector<double> cpar_local(n_energies, 0.0);
+        std::vector<double> cperp_local(n_energies, 0.0);
         
-        // Pre-allocate sums for all energies for this orientation
-        std::vector<std::complex<double>> sumL_par(n_energies, 0.0);
-        std::vector<std::complex<double>> sumR_par(n_energies, 0.0);
-        std::vector<std::complex<double>> sumL_x(n_energies, 0.0);
-        std::vector<std::complex<double>> sumR_x(n_energies, 0.0);
-        std::vector<std::complex<double>> sumL_y(n_energies, 0.0);
-        std::vector<std::complex<double>> sumR_y(n_energies, 0.0);
-        
-        // Loop Spatial Grid
-        for(int ix=0; ix<nx; ++ix) {
-            double xL = x0 + ix*dx;
-            for(int iy=0; iy<ny; ++iy) {
-                double yL = y0 + iy*dy;
-                for(int iz=0; iz<nz; ++iz) {
-                    double zL = z0 + iz*dz;
-                    
-                    // Rotate Coords Lab -> Mol
-                    double xM, yM, zM;
-                    rot.transform(xL, yL, zL, xM, yM, zM);
-                    
-                    // Evaluate Dyson
-                    double valL = dysonL.evaluate(xM, yM, zM);
-                    double valR = dysonR.evaluate(xM, yM, zM);
-                    // L/R Logic: In clean code, we might treat them same if same object
-                    
-                    // Dipole Operator (r . eps) in Lab Frame
-                    // ezDyson fixes Polarization along Z (eps = z).
-                    // So Operator is always zL.
-                    // Par: k || Z. Perp: k || X (or Y).
-                    
-                    std::complex<double> termL_par = valL * zL;
-                    std::complex<double> termR_par = valR * zL;
-                    
-                    // Perp X: Dipole Z, k || X
-                    std::complex<double> termL_x = valL * zL; 
-                    std::complex<double> termR_x = valR * zL;
-                    
-                    // Perp Y: Dipole Z, k || Y
-                    std::complex<double> termL_y = valL * zL;
-                    std::complex<double> termR_y = valR * zL;
-                    
-                    // Loop Energies
-                    for(int k=0; k<n_energies; ++k) {
-                        double kval = k_values[k];
-                        // Plane Wave part: exp(i * k * r_lab . k_hat)
-                        // k vector is along Z_lab?
-                        // Standard Photoelectron definition: k is the direction of electron emission.
-                        // In PAD formalism, usually we align k along Z_lab (or define axis wrt k).
-                        // ezDyson eikr.C:
-                        // double coskz = cos(k * z); ... eikrz = Complex(coskz, sinkz);
-                        // totalLDys_par = tLDys_cart * eikrz;
-                        // totalLDys_x = tLDys_cart * eikrx;
-                        // totalLDys_y = tLDys_cart * eikry;
-                        // It seems ezDyson calculates scattering into X, Y, Z directions simultaneously?
-                        // And then averages?
-                        // Wait. usually we pick k || Z_lab.
-                        // cpar corresponds to polarization || k? No.
-                        // Parallel/Perp refer to Polarization vector relative to some axis?
-                        // Usually Sigma_Par is Pol || k? Or Pol || Molecular Axis?
-                        // In Lab Frame fixed experiment (e.g. photodetachment), 
-                        // Beta is defined relative to Laser Polarization.
-                        // Theta is angle between k and Polarization epsilon.
-                        // Here we are calculating Total Cross Section or Beta?
-                        // Beta from Sigma_par and Sigma_perp.
-                        // Sigma_par: electron emitted along polarization?
-                        // ezDyson: cpar computes integral with eikrz (k along Z).
-                        // tLDys_cart uses z (Dipole along Z).
-                        // So Par: k || Z, eps || Z. (Theta = 0).
-                        // cperp: eikrz (k along Z).
-                        // But uses x and y dipoles?
-                        // No, ezDyson uses eikrX, eikrY, eikrZ.
-                        // eikr.C: 
-                        // totalLDys_par = tLDys_cart * eikrz; (Dipole Z, k Z) -> Theta=0
-                        // totalLDys_x = tLDys_cart * eikrx; (Dipole Z, k X) -> Theta=90? (Pol Z, k X)
-                        // Wait. tLDys_cart = Ldys * z. (This is dipole Z).
-                        // So Polarization is FIXED along Z.
-                        // Then it computes emission along Z (eikrz) -> Par.
-                        // And emission along X (eikrx) -> Perp?
-                        // And emission along Y (eikry) -> Perp?
-                        // Yes!
-                        // "cperp[k] += 0.5*tmp_x+0.5*tmp_y;"
-                        // So it calculates k along X and k along Y (both perp to Pol Z).
-                        // This assumes averaging over orientations makes X and Y redundant?
-                        // Yes.
+        // Private rotation object per thread
+        EzRotation rot_local;
+
+        #pragma omp for
+        for (int v = 0; v < n_orientations; ++v) {
+            const auto& p = anggrid.points[v];
+            
+            // Set rotation for this thread's orientation
+            rot_local.set_euler_zxz_transpose(p.alpha, p.beta, p.gamma);
+            double weight = p.weight;
+            
+            // Pre-allocate sums for all energies for this orientation
+            // Reset for each orientation
+            std::vector<std::complex<double>> sumL_par(n_energies, 0.0);
+            std::vector<std::complex<double>> sumR_par(n_energies, 0.0);
+            std::vector<std::complex<double>> sumL_x(n_energies, 0.0);
+            std::vector<std::complex<double>> sumR_x(n_energies, 0.0);
+            std::vector<std::complex<double>> sumL_y(n_energies, 0.0);
+            std::vector<std::complex<double>> sumR_y(n_energies, 0.0);
+            
+            // Loop Spatial Grid
+            // Optimization: Iterate flat index if possible, or keep loops
+            for(int ix=0; ix<nx; ++ix) {
+                double xL = x0 + ix*dx;
+                for(int iy=0; iy<ny; ++iy) {
+                    double yL = y0 + iy*dy;
+                    for(int iz=0; iz<nz; ++iz) {
+                        double zL = z0 + iz*dz;
                         
-                        // Implementation:
-                        // Par: Dipole Z, PlaneWave exp(i k zL).
-                        // Perp: Dipole Z, PlaneWave exp(i k xL) (and yL).
+                        // Rotate Coords Lab -> Mol
+                        double xM, yM, zM;
+                        rot_local.transform(xL, yL, zL, xM, yM, zM);
                         
-                        // Wait, my code above:
-                        // termL_par = valL * zL; (Dipole Z)
-                        // termL_x = valL * xL; (Dipole X?)
-                        // ezDyson: `tLDys_cart=Ldys_value*gridptr_z[nz];` (Dipole Z is FIXED).
-                        // Then `totalLDys_par = tLDys_cart * eikrz`.
-                        // `totalLDys_x = tLDys_cart * eikrx`.
-                        // Ah! It uses the SAME dipole operator (Z-polarized light) for all.
-                        // It scans k-vector direction.
-                        // k || Z -> Par. k || X -> Perp.
+                        // Evaluate Dyson
+                        double valL = dysonL.evaluate(xM, yM, zM);
+                        double valR = dysonR.evaluate(xM, yM, zM);
                         
-                        // Correct Logic:
-                        std::complex<double> dipole_op = valL * zL; // Polarization along Z
-                        std::complex<double> dipole_op_R = valR * zL;
+                        // Check threshold to skip negligible points
+                         if (std::abs(valL) < 1.0e-15 && std::abs(valR) < 1.0e-15) continue;
+
+                        // Dipole Operator (r . eps) in Lab Frame
+                        // ezDyson fixes Polarization along Z (eps = z).
+                        // So Operator is always zL.
                         
-                        double kz = kval * zL;
-                        double kx = kval * xL;
-                        // double ky = kval * yL; // Optional for averaging
+                        std::complex<double> termL_par = valL * zL;
+                        std::complex<double> termR_par = valR * zL;
                         
-                        std::complex<double> exp_kz(std::cos(kz), std::sin(kz));
-                        std::complex<double> exp_kx(std::cos(kx), std::sin(kx));
+                        // Perp X: Dipole Z, k || X
+                        std::complex<double> termL_x = valL * zL; 
+                        std::complex<double> termR_x = valR * zL;
                         
-                        // Accumulate
-                        // Integral Psi^* * Op * Phi
-                        // Psi_k = exp(i k r). Psi^* = exp(-i k r).
-                        // Integral exp(-i k r) * z * Dyson
-                        // My sumL should sum (dyson * z * exp(-ikz)).
-                        // termL * conj(exp_kz).
-                        // ezDyson: `totalLDys_par=tLDys_cart*eikrz;` (No conj? Maybe eikrz is exp(-ikz)?)
-                        // `Complex eikrz(coskz,sinkz);` -> exp(ikz).
-                        // Integration: `Lcklm += total`.
-                        // Later: `tmp_par=(Lcklm * Rcklm).Re()`.
-                        // If one is conjugate?
-                        // Matrix Element = <Psi | Op | Dyson> = Integral Psi^* Op Dyson.
-                        // If Psi = exp(ikz), Psi^* = exp(-ikz).
-                        // ezDyson accumulates Dyson * exp(ikz).
-                        // This implies M = Integral Dyson * exp(ikz).
-                        // This corresponds to < exp(-ikz) | Op | Dyson >? Or < Dyson | Op | exp(-ikz) >* ?
-                        // The physics: M ~ Fourier Transform of (Op * Dyson).
-                        // FT(f)(k) = Integral f(r) exp(-ik r).
-                        // ezDyson uses exp(+ikr).
-                        // Maybe definition of k is -k? Or it calculates < Dyson | Op | Psi >?
-                        // If <D | Op | Psi> = Integral D^* z exp(ikz).
-                        // Then |M|^2 is same.
-                        // I will assume `exp(ikz)` is correct matching ezDyson.
+                        // Perp Y: Dipole Z, k || Y
+                        std::complex<double> termL_y = valL * zL;
+                        std::complex<double> termR_y = valR * zL;
                         
-                        sumL_par[k] += dipole_op * exp_kz;
-                        sumR_par[k] += dipole_op_R * std::conj(exp_kz); // Wait.
-                        // ezDyson: `totalRDys_par=tRDys_cart*eikrz.Conj();`
-                        // So R uses Conj(exp). L uses exp.
-                        // Then product L * R corresponds to |Integral|^2?
-                        // Integral L * Integral R^*.
-                        // If SumL = Sum(D * exp), SumR = Sum(D * exp^*).
-                        // SumL * SumR = (Sum D exp) * (Sum D exp^*).
-                        // This is NOT |Sum|^2 unless exp^* = conj(exp).
-                        // If SumR uses conj(exp), and if coefficients are real...
-                        // If SumL = A, SumR = A^*. Then product is |A|^2.
-                        // ezDyson uses `totalRDys_par=tRDys_cart*eikrz.Conj()`.
-                        // So yes, R takes conjugate.
-                        
-                        sumL_par[k] += dipole_op * exp_kz;
-                        sumR_par[k] += dipole_op_R * std::conj(exp_kz);
-                        
-                        sumL_x[k] += dipole_op * exp_kx;
-                        sumR_x[k] += dipole_op_R * std::conj(exp_kx);
-                        
-                        // Ignore Y for speed if X is statistically sufficient (ezDyson does X and Y)
-                        // I'll do just X for now to match 2x speedup or do both to match accuracy.
-                        // ezDyson does "0.5*tmp_x+0.5*tmp_y". I'll do just X and assume symmetry or do Y.
-                        // Let's do Y for completeness.
-                        double ky = kval * yL;
-                        std::complex<double> exp_ky(std::cos(ky), std::sin(ky));
-                        sumL_y[k] += dipole_op * exp_ky;
-                        sumR_y[k] += dipole_op_R * std::conj(exp_ky);
+                        // Loop Energies
+                        for(int k=0; k<n_energies; ++k) {
+                            double kval = k_values[k];
+                            // Plane Wave part: exp(i * k * r_lab . k_hat)
+                            
+                            double kz = kval * zL;
+                            double kx = kval * xL;
+                            double ky = kval * yL;
+                            
+                            std::complex<double> exp_kz(std::cos(kz), std::sin(kz));
+                            std::complex<double> exp_kx(std::cos(kx), std::sin(kx));
+                            std::complex<double> exp_ky(std::cos(ky), std::sin(ky));
+                            
+                            sumL_par[k] += termL_par * exp_kz;
+                            sumR_par[k] += termR_par * std::conj(exp_kz);
+                            
+                            sumL_x[k] += termL_x * exp_kx;
+                            sumR_x[k] += termR_x * std::conj(exp_kx);
+                            
+                            sumL_y[k] += termL_y * exp_ky;
+                            sumR_y[k] += termR_y * std::conj(exp_ky);
+                        }
                     }
                 }
-            }
-        } // End Grid
-        
-        // Accumulate to global cross sections
-        for(int k=0; k<n_energies; ++k) {
-            double term_par = std::real(sumL_par[k] * sumR_par[k]);
-            double term_x = std::real(sumL_x[k] * sumR_x[k]);
-            double term_y = std::real(sumL_y[k] * sumR_y[k]);
+            } // End Grid
             
-            cpar[k]  += term_par * dV2 * weight;
-            cperp[k] += 0.5 * (term_x + term_y) * dV2 * weight;
-        }
+            // Accumulate to thread-local cross sections
+            for(int k=0; k<n_energies; ++k) {
+                double term_par = std::real(sumL_par[k] * sumR_par[k]);
+                double term_x = std::real(sumL_x[k] * sumR_x[k]);
+                double term_y = std::real(sumL_y[k] * sumR_y[k]);
+                
+                cpar_local[k]  += term_par * dV2 * weight;
+                cperp_local[k] += 0.5 * (term_x + term_y) * dV2 * weight;
+            }
+            
+        } // End Orientations Loop
         
-    } // End Orientations
+        // Critical Section to merge thread-local results
+        #pragma omp critical
+        {
+            for(int k=0; k<n_energies; ++k) {
+                cpar[k] += cpar_local[k];
+                cperp[k] += cperp_local[k];
+            }
+        }
+    } // End Parallel Region
 }

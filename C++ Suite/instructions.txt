@@ -1,0 +1,129 @@
+Dyson Orbital Generator Instructions
+====================================
+
+This tool generates and visualizes Dyson Orbitals from Q-Chem output files.
+
+1. Compilation
+--------------
+Run `make` in the root directory:
+   $ make
+
+2. Generation
+-------------
+Use `dyson_io.py` to parse Q-Chem output and generate a grid file.
+Arguments:
+   input_file       Path to Q-Chem output file (.out)
+   --dyson-index N  Index of the Dyson orbital to compute (0-based)
+   --output
+    FILE    Output binary grid file (e.g., orbital.bin)
+   --grid-step VAL  Grid spacing in Bohr (default 0.2, use 0.3-0.5 for speed)
+
+Example:
+   $ python3 src/python/dyson_io.py reference\ materials/CuO_augccPVDZPP_dyson.out --dyson-index 0 --output cuo.bin --grid-step 0.3
+
+3. Visualization
+----------------
+Use `visualize.py` to view the orbital.
+Arguments:
+   file             Input binary grid file
+   --isovalue VAL   Isosurface value (default 0.02). Plotted in Blue (+) and Red (-).
+   --slice          View a 2D slice instead of 3D.
+   --axis {0,1,2}   Axis for slicing (0=X, 1=Y, 2=Z).
+
+Example (3D Isosurface):
+   $ python3 src/python/visualize.py cuo.bin --isovalue 0.02
+
+Example (2D Slice):
+   $ python3 src/python/visualize.py cuo.bin --slice --axis 2
+
+4. Cross Section Calculation
+----------------------------
+You can calculate total photodetachment cross sections using the `--xs` flag.
+Arguments:
+   --xs             Enable cross section calculation
+   --ie             Ionization Energy (eV)
+   --padding        Padding around molecule in Bohr (Default 5.0). Use 20.0 for accurate low-energy XS.
+   --lmax           Max Angular Momentum for continuum expansion (default 3)
+   --e-range        Energy Grid parameters: MIN MAX PTS (in eV)
+
+Example:
+   $ python3 src/python/dyson_io.py reference\ materials/CuO_augccPVDZPP_dyson.out \
+       --dyson-pair 2 3 --output cuo_b1.bin \
+       --grid-step 0.4 --padding 20.0 \
+       --xs --ie 1.778 --lmax 3 --e-range 1.88 11.88 21
+
+Output:
+   - dyson_gen will write `cross_section.txt` containing Energy(eV) and CrossSection(au).
+
+
+5. Relative Cross Sections (Vibrational Channels)
+-------------------------------------------------
+To include vibrational channels and calculate relative cross sections:
+
+1. Create a vibrational file (e.g., `vib.txt`) with format:
+   # Energy(eV)  FCF
+   1.778         0.849
+   1.857         0.501
+   ...
+
+2. Run `dyson_io.py` with `--vib-file vib.txt`:
+   $ python3 src/python/dyson_io.py ... --vib-file vib.txt --xs ...
+
+   This will produce `xs_relative.csv` containing Total and Channel-specific cross sections.
+
+6. Angle Grid Generation (C++ Backend)
+--------------------------------------
+The C++ core now supports internal angle grid generation for orientational averaging.
+Currently, this is accessible via the `test_rotation` verification driver, but the `AngleGrid` class is ready for integration into the main calculation pipeline.
+
+Supported Grid Types:
+1. Hardcoded: The standard 150-point grid from the reference code.
+2. Geometric: A uniform product grid (alpha x beta).
+3. Repulsion: Fibonacci spiral initialization optimized by Coulomb repulsion.
+
+Gamma Sampling:
+Any grid can be expanded by sampling the Gamma angle (rotation around molecular Z-axis).
+Example: 50 repulsion points with N_gamma=2 results in 100 total orientations (Gamma = 0, Pi/2).
+
+To verify grid generation and visualize distributions:
+   $ g++ -std=c++17 src/cxx/rotation.cpp src/cxx/angle_grid.cpp src/cxx/test_rotation.cpp -o test_rotation
+   $ ./test_rotation
+   $ python3 src/python/plot_grid_distribution.py
+   7. Continuum Functions (Directional)
+------------------------------------
+Beta anisotropy calculations require directional continuum functions (not just isotropic).
+The `src/cxx/continuum.h` module provides:
+1. Plane Wave: `EvaluatePlaneWave` -> $e^{i \vec{k} \cdot \vec{r}}$
+2. PW Expansion: `EvaluatePlaneWaveExpansion` -> Partial wave sum $4\pi \sum i^l j_l(kr) Y_{lm}(\hat{r}) Y_{lm}^*(\hat{k})$ for numerical integration.
+
+Verification:
+   $ g++ -std=c++17 src/cxx/math_special.cpp src/cxx/rotation.cpp src/cxx/continuum.cpp src/cxx/test_continuum.cpp -o test_continuum
+   $ ./test_continuum
+(See `test_continuum.cpp` for rotation invariance and convergence checks).
+
+(See `test_continuum.cpp` for rotation invariance and convergence checks).
+
+
+8. Beta Anisotropy Calculation (ezDyson Algorithm)
+--------------------------------------------------
+Calculate photodetachment anisotropy parameters (Beta) using the optimized `NumEikr` engine, which aligns with `ezDyson` methodology (20x faster than Python prototype).
+
+Usage:
+   $ ./beta_gen input_file output.csv [options]
+
+Arguments:
+   input_file       Input data file (same format as dyson_gen)
+   output.csv       Output CSV file (eKE, SigmaPar, SigmaPerp, Beta)
+   --energies E1 E2 ...  List of photoelectron energies (eV)
+   --points N       Number of points for angular grid (default 150)
+
+Example:
+   $ ./beta_gen cpp_input.dat beta.csv --energies 0.1 0.5 1.0 1.5
+
+Processing:
+   1. Loads Dyson orbitals and calculates their Centroid.
+   2. Shifts molecule to center the Dyson orbital at (0,0,0).
+   3. Generates an angular grid (Hardcoded 150-pt or Repulsion).
+   4. Performs efficient orientational averaging (Loop: Orientation -> Grid -> Energy).
+   5. Computes Beta = 2(Par - Perp) / (Par + 2*Perp).
+

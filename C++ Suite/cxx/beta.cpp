@@ -2,6 +2,11 @@
 #include "continuum.h"
 #include "rotation.h"
 #include "tools.h"
+#include "clebsch_gordan.h"
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+#include "math_special.h"
 #include <cmath>
 #include <complex>
 #include <iostream>
@@ -62,7 +67,9 @@ std::vector<BetaResult> BetaCalculator::CalculateBeta(
         double sum_sigma_par = 0.0;
         double sum_sigma_perp = 0.0;
         
-        for (const auto& orient : angle_grid.points) {
+        #pragma omp parallel for reduction(+:sum_sigma_par, sum_sigma_perp)
+        for (int i = 0; i < int(angle_grid.points.size()); ++i) {
+            const auto& orient = angle_grid.points[i];
             RotationMatrix R;
             R.SetFromEuler(orient.alpha, orient.beta, orient.gamma);
             RotationMatrix RT = R.Transpose();
@@ -106,6 +113,251 @@ std::vector<BetaResult> BetaCalculator::CalculateBeta(
         double sigma_perp = sum_sigma_perp * norms;
         
         double beta = 2.0 * (sigma_par - sigma_perp) / (sigma_par + 2.0 * sigma_perp);
+        
+        results.push_back({E_eV, sigma_par, sigma_perp, beta});
+    }
+    
+    return results;
+}
+
+// Helper to compute Spherical Matrix Elements C_{klm, mu}
+// mu = -1, 0, 1 (Spherical Dipole Component)
+// result[l*(l+1) + m][mu+1]
+std::vector<std::vector<std::complex<double>>> ComputeSphericalMatrixElements(
+    const Dyson& dyson,
+    const UniformGrid& grid,
+    double k,
+    int l_max
+) {
+    int num_lm = (l_max + 1) * (l_max + 1);
+    std::vector<std::vector<std::complex<double>>> moments(num_lm, std::vector<std::complex<double>>(3, {0.0, 0.0}));
+    
+    double dV = grid.dx * grid.dy * grid.dz;
+    
+    #pragma omp parallel
+    {
+        auto local_moments = moments; // Thread-local copy
+        
+        #pragma omp for
+        for (int ix = 0; ix < grid.nx; ++ix) {
+            double x = grid.xmin + ix * grid.dx;
+            for (int iy = 0; iy < grid.ny; ++iy) {
+                double y = grid.ymin + iy * grid.dy;
+                for (int iz = 0; iz < grid.nz; ++iz) {
+                    double z = grid.zmin + iz * grid.dz;
+                    
+                    double dyson_val = dyson.evaluate(x, y, z);
+                    if (std::abs(dyson_val) < 1e-12) continue;
+                    
+                    double r = std::sqrt(x*x + y*y + z*z);
+                    if(r < 1e-10) continue;
+                    
+                    double theta = std::acos(z/r);
+                    double phi = std::atan2(y, x);
+                    
+                    std::complex<double> Y1_m1 = MathSpecial::SphericalHarmonicY(1, -1, theta, phi);
+                    std::complex<double> Y1_0  = MathSpecial::SphericalHarmonicY(1, 0,  theta, phi);
+                    std::complex<double> Y1_1  = MathSpecial::SphericalHarmonicY(1, 1,  theta, phi);
+                    
+                    std::complex<double> dip_m1 = r * std::conj(Y1_m1); 
+                    std::complex<double> dip_0  = r * std::conj(Y1_0);
+                    std::complex<double> dip_1  = r * std::conj(Y1_1);
+
+                    int idx = 0;
+                    for(int l=0; l<=l_max; ++l) {
+                        double jl = MathSpecial::SphericalBesselJ(l, k*r);
+                        
+                        std::complex<double> i_pow_l = (l % 4 == 0) ? 1.0 :
+                                                       (l % 4 == 1) ? std::complex<double>(0, 1) :
+                                                       (l % 4 == 2) ? -1.0 : std::complex<double>(0, -1);
+                                                       
+                        double radial_part = jl * dyson_val * dV; 
+                        
+                        for(int m=-l; m<=l; ++m) {
+                            std::complex<double> Ylm = MathSpecial::SphericalHarmonicY(l, m, theta, phi);
+                            std::complex<double> Ylm_conj = std::conj(Ylm);
+                            
+                            std::complex<double> common = radial_part * i_pow_l * Ylm_conj;
+                            
+                            local_moments[idx][0] += common * dip_m1;
+                            local_moments[idx][1] += common * dip_0;
+                            local_moments[idx][2] += common * dip_1;
+                            
+                            idx++;
+                        }
+                    }
+                }
+            }
+        }
+        
+        #pragma omp critical
+        {
+            for(size_t i=0; i<moments.size(); ++i) {
+                moments[i][0] += local_moments[i][0];
+                moments[i][1] += local_moments[i][1];
+                moments[i][2] += local_moments[i][2];
+            }
+        }
+    }
+    
+    return moments;
+}
+std::vector<BetaResult> BetaCalculator::CalculateBetaAnalytic(
+    const Dyson& dyson_L,
+    const Dyson& dyson_R,
+    const UniformGrid& grid,
+    const std::vector<double>& photoelectron_energies_ev,
+    int l_max
+) {
+    std::vector<BetaResult> results;
+    const double HARTREE_EV = 27.211386;
+    ClebschGordan cg; 
+    
+    double dipole_norm = std::sqrt(4.0 * M_PI / 3.0); 
+
+    for (double E_eV : photoelectron_energies_ev) {
+        double E_au = E_eV / HARTREE_EV;
+        double k = std::sqrt(2.0 * E_au);
+        
+        if (k < 1e-6) {
+             results.push_back({E_eV, 0.0, 0.0, 0.0});
+             continue;
+        }
+
+        // Use passed l_max
+        // int l_max = 3; // Default passed from argument
+        
+        auto C_L = ComputeSphericalMatrixElements(dyson_L, grid, k, l_max);
+        auto C_R = ComputeSphericalMatrixElements(dyson_R, grid, k, l_max);
+        
+        for(auto& row : C_L) for(auto& val : row) val *= dipole_norm;
+        for(auto& row : C_R) for(auto& val : row) val *= dipole_norm;
+        
+        double sigma_par = 0.0;
+        double sigma_perp = 0.0;
+        
+        for (int l=0; l<=l_max; ++l) {
+            for (int m1=-l; m1<=l; m1++) {
+                
+                std::complex<double> Y_par = MathSpecial::SphericalHarmonicY(l, m1, 0.0, 0.0);
+                std::complex<double> Y_perp = MathSpecial::SphericalHarmonicY(l, m1, M_PI/2.0, 0.0);
+                
+                double term_contrib = 0.0;
+                
+                for (int m21=-l; m21<=l; m21++) {
+                   for (int m22=-l; m22<=l; m22++) {
+                      for (int v1=0; v1<3; v1++) { 
+                         for (int v2=0; v2<3; v2++) {
+                           
+                            if ((m21+v1) == (m22+v2)) {
+                               for (int ltot=(std::abs(l-1)); ltot<=(l+1); ltot++) {
+                                  
+                                  int idx1 = l*l + (m21+l);
+                                  int idx2 = l*l + (m22+l);
+                                  
+                                  std::complex<double> val1 = C_L[idx1][v1];
+                                  std::complex<double> val2 = C_R[idx2][v2];
+                                  
+                                  double tmp = std::real(val1 * std::conj(val2)); 
+                                  
+                                  int L_idx = ltot - std::abs(l-1);
+                                  
+                                  double cgc1 = cg.cgc[l][L_idx][m1+l][1]; 
+                                  double cgc21 = cg.cgc[l][L_idx][m21+l][v1];
+                                  double cgc22 = cg.cgc[l][L_idx][m22+l][v2];
+                                  
+                                  tmp *= cgc1 * cgc1 * cgc21 * cgc22;
+                                  tmp /= (2.0 * ltot + 1.0);
+                                  
+                                  term_contrib += tmp;
+                               }
+                            }
+                         }
+                      }
+                   }
+                }
+                
+                sigma_par += term_contrib * std::norm(Y_par);
+                sigma_perp += term_contrib * std::norm(Y_perp);
+            }
+        }
+        
+        for (int l=0; l<=l_max; ++l) {
+            for (int m11=-l; m11<=l; m11++) {
+                
+                std::complex<double> Y1_par = MathSpecial::SphericalHarmonicY(l, m11, 0.0, 0.0);
+                std::complex<double> Y1_perp = MathSpecial::SphericalHarmonicY(l, m11, M_PI/2.0, 0.0);
+                
+                for (int l2=0; l2<=l_max; ++l2) {
+                   if (l == l2) continue; 
+                   
+                   for (int m12=-l2; m12<=l2; m12++) {
+                       if (m12 != m11) continue; 
+                       
+                       std::complex<double> Y2_par = std::conj(MathSpecial::SphericalHarmonicY(l2, m12, 0.0, 0.0));
+                       std::complex<double> Y2_perp = std::conj(MathSpecial::SphericalHarmonicY(l2, m12, M_PI/2.0, 0.0));
+                       
+                       double term_contrib = 0.0;
+                       
+                       for (int m21=-l; m21<=l; m21++) {
+                          for (int m22=-l2; m22<=l2; m22++) {
+                             for (int v1=0; v1<3; v1++) {
+                                for (int v2=0; v2<3; v2++) {
+                                   
+                                   if ((m21+v1-1) == (m22+v2-1)) { // Corrected check
+                                      
+                                      int idx1 = l*l + (m21+l);
+                                      int idx2 = l2*l2 + (m22+l2);
+                                      
+                                      std::complex<double> val1 = C_L[idx1][v1];
+                                      std::complex<double> val2 = C_R[idx2][v2];
+                                      
+                                      double tmp = std::real(val1 * std::conj(val2));
+                                      
+                                      for (int ltot=(std::abs(l-1)); ltot<=(l+1); ltot++) {
+                                         for (int ltot2=(std::abs(l2-1)); ltot2<=(l2+1); ltot2++) {
+                                            if (ltot == ltot2) {
+                                               
+                                               int L_idx1 = ltot - std::abs(l-1);
+                                               int L_idx2 = ltot2 - std::abs(l2-1);
+                                               
+                                               double cgc11 = cg.cgc[l][L_idx1][m11+l][1];
+                                               double cgc12 = cg.cgc[l2][L_idx2][m12+l2][1];
+                                               double cgc21 = cg.cgc[l][L_idx1][m21+l][v1];
+                                               double cgc22 = cg.cgc[l2][L_idx2][m22+l2][v2];
+                                               
+                                               double term = tmp * cgc11 * cgc12 * cgc21 * cgc22;
+                                               term /= (2.0 * ltot + 1.0);
+                                               
+                                               term_contrib += term;
+                                            }
+                                         }
+                                      }
+                                   }
+                                }
+                             }
+                          }
+                       }
+                       sigma_par += term_contrib * std::real(Y1_par * Y2_par); 
+                       sigma_perp += term_contrib * std::real(Y1_perp * Y2_perp);
+                   }
+                }
+            }
+        }
+        
+        double prefactor = 3.0 / (4.0 * M_PI);
+        sigma_par *= prefactor;
+        sigma_perp *= prefactor;
+        
+        double norms = dyson_L.qchem_norm * dyson_R.qchem_norm;
+        sigma_par *= norms;
+        sigma_perp *= norms;
+        
+        double denom = sigma_par + 2.0 * sigma_perp;
+        double beta = 0.0;
+        if (std::abs(denom) > 1e-18) {
+            beta = 2.0 * (sigma_par - sigma_perp) / denom;
+        }
         
         results.push_back({E_eV, sigma_par, sigma_perp, beta});
     }

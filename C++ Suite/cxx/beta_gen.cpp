@@ -92,6 +92,8 @@ int main(int argc, char** argv) {
     bool use_hardcoded = true;
 
     // Parse args
+    // Parse args
+    bool use_pwe = false;
     for(int i=3; i<argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--energies") {
@@ -116,6 +118,8 @@ int main(int argc, char** argv) {
                     i++;
                 } catch (...) {}
             }
+        } else if (arg == "--pwe") {
+            use_pwe = true;
         }
     }
     
@@ -157,35 +161,78 @@ int main(int argc, char** argv) {
     const Dyson& L = dysons[0];
     const Dyson& R = (dysons.size() > 1) ? dysons[1] : dysons[0];
 
-    // Use NumEikr for optimized calculation (ezDyson logic)
-    std::cout << "Calculating Beta parameters using NumEikr (ezDyson algorithm)..." << std::endl;
-    NumEikr num_eikr;
-    // Note: Dyson objects L and R passed separately
-    num_eikr.compute(grid, L, R, angle_grid, beta_energies);
+    // Results container
+    struct ResultRow {
+        double e;
+        double par;
+        double perp;
+        double beta;
+    };
+    std::vector<ResultRow> final_results;
+
+    int l_max = 3;
+    bool explicit_lmax = false;
+
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--pwe") {
+            use_pwe = true;
+        } else if (arg == "--points" && i + 1 < argc) {
+             std::string points_str = argv[++i];
+             try {
+                 n_points = std::stoi(points_str);
+             } catch(...) {
+                 std::cerr << "Invalid number of points: " << points_str << std::endl;
+                 return 1;
+             }
+        } else if (arg == "--lmax" && i + 1 < argc) {
+             std::string lmax_str = argv[++i];
+             try {
+                 l_max = std::stoi(lmax_str);
+                 explicit_lmax = true;
+             } catch(...) {
+                 std::cerr << "Invalid lmax: " << lmax_str << std::endl;
+                 return 1;
+             }
+        } // ... existing args
+    }
+
+    if (use_pwe) {
+        std::cout << "Calculating Beta parameters using Plane Wave Expansion (Analytic Averaging)..." << std::endl;
+        std::cout << "Using l_max = " << l_max << std::endl;
+        // Call BetaCalculator Analytic
+        auto beta_results = BetaCalculator::CalculateBetaAnalytic(L, R, grid, beta_energies, l_max);
+        
+        for(const auto& res : beta_results) {
+            final_results.push_back({res.energy, res.sigma_par, res.sigma_perp, res.beta});
+        }
+    } else {
+        // Use NumEikr for optimized calculation (ezDyson logic)
+        std::cout << "Calculating Beta parameters using NumEikr (ezDyson algorithm)..." << std::endl;
+        NumEikr num_eikr;
+        num_eikr.compute(grid, L, R, angle_grid, beta_energies);
+        
+        for(size_t i=0; i<beta_energies.size(); ++i) {
+            double eKE = beta_energies[i];
+            double par = num_eikr.get_sigma_par(i);
+            double perp = num_eikr.get_sigma_perp(i);
+            
+            // Beta formula: 2(Par - Perp) / (Par + 2*Perp)
+            double denom = par + 2.0 * perp;
+            double beta = 0.0;
+            if (std::abs(denom) > 1e-14) {
+                beta = 2.0 * (par - perp) / denom;
+            }
+            final_results.push_back({eKE, par, perp, beta});
+        }
+    }
     
     // Write Results
     std::ofstream beta_file(output_file);
     beta_file << "eKE,SigmaPar,SigmaPerp,Beta\n";
     
-    for(size_t i=0; i<beta_energies.size(); ++i) {
-        double eKE = beta_energies[i];
-        double par = num_eikr.get_sigma_par(i);
-        double perp = num_eikr.get_sigma_perp(i);
-        
-        // Beta formula: 2(Par - Perp) / (Par + 2*Perp)
-        double denom = par + 2.0 * perp;
-        double beta = 0.0;
-        if (std::abs(denom) > 1e-14) {
-            beta = 2.0 * (par - perp) / denom;
-        }
-        
-        // Apply scaling for absolute cross sections (optional, beta is ratio)
-        // ezDyson scale: norm * kwave * ene * dyson_norm
-        // We output raw Par/Perp proportional values here, consistent with user needs for Beta.
-        // If absolute XS needed, apply scale.
-        // par *= scale; perp *= scale;
-        
-        beta_file << eKE << "," << par << "," << perp << "," << beta << "\n";
+    for(const auto& row : final_results) {
+        beta_file << row.e << "," << row.par << "," << row.perp << "," << row.beta << "\n";
     }
     beta_file.close();
     

@@ -292,9 +292,11 @@ if __name__ == "__main__":
     group.add_argument("--dyson-pair", nargs=2, type=int, metavar=('L', 'R'), help="Indices of Left and Right Dyson orbitals")
 
     parser.add_argument("--grid-step", type=float, default=0.2, help="Grid step size (Bohr)")
-    parser.add_argument("--padding", type=float, default=5.0, help="Padding around molecule (Bohr)")
+    parser.add_argument("--padding", type=float, default=20.0, help="Padding around molecule (Bohr)")
     parser.add_argument("--cpp-bin", default="./dyson_gen", help="Path to compiled C++ binary")
     parser.add_argument("--output", default="dyson_grid.bin", help="Output binary file")
+    parser.add_argument("--gen-only", action="store_true", help="Only generate the C++ input file, do not run the binary.")
+    parser.add_argument("--input-out", default="cpp_input.dat", help="Name of the generated C++ input file (default: cpp_input.dat)")
     
     # Cross Section Args
     parser.add_argument("--xs", action="store_true", help="Compute Cross Sections")
@@ -344,7 +346,7 @@ if __name__ == "__main__":
         "step": args.grid_step
     }
     
-    temp_inp = "cpp_input.dat"
+    temp_inp = args.input_out
     write_cpp_input(data, selected_indices, grid, temp_inp)
     
     if args.xs:
@@ -405,10 +407,16 @@ if __name__ == "__main__":
             with open(temp_inp, "a") as f:
                 f.write(f"\n{args.ie} {args.lmax} {int(args.e_range[2])} {args.e_range[0]} {args.e_range[1]}\n")
     
+    print(f"Input file written to {temp_inp}")
+    
+    if args.gen_only:
+        print("Generation only requested. Exiting.")
+        sys.exit(0)
+
     print(f"Running {args.cpp_bin}...")
     if not os.path.exists(args.cpp_bin):
         print(f"Error: C++ binary {args.cpp_bin} not found. Did you compile?")
-        print("Run: clang++ -std=c++17 -O3 src/cxx/*.cpp -o dyson_gen")
+        print("Run: make dyson_gen")
         sys.exit(1)
         
     subprocess.run([args.cpp_bin, temp_inp, args.output], check=True)
