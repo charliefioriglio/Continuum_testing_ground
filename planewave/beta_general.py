@@ -88,16 +88,13 @@ def calculate_beta(E_eV, ang_grid, degeneracies=None, pol_lab=None):
     """
 
     from CuO_do import (
-        DO_coeffs_b1_L,
-        DO_coeffs_b1_R,
-        DO_coeffs_b2_L,
-        DO_coeffs_b2_R
+        DO_coeffs_a1_L,
+        DO_coeffs_a1_R,
     )
 
     if degeneracies is None:
         degeneracies = [
-            (DO_coeffs_b1_L, DO_coeffs_b1_R),
-            (DO_coeffs_b2_L, DO_coeffs_b2_R)
+            (DO_coeffs_a1_L, DO_coeffs_a1_R)
         ]
 
     if pol_lab is None:
@@ -162,7 +159,7 @@ if __name__ == "__main__":
     #ang_grid = repulsion_orientations(n_orientations=n_orientations, gamma_fixed=0.0)
     #ang_grid = ang_grid.T  # Convert to (3, N) format
     # Photoelectron kinetic energies (match CN.py for verification)
-    E_eV = np.linspace(0.1, 0.3, 2)
+    E_eV = np.linspace(0.1, 0.5, 2)
 
     # Calculate beta using CN.py logic
     print(f"Calculating beta for {len(E_eV)} energies with {ang_grid.shape[1]} orientations...")

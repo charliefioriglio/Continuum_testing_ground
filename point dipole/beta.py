@@ -131,8 +131,7 @@ if __name__ == '__main__':
 
     D_values = np.array([0.0, 0.3])
     degeneracies = [
-        (DO_coeffs_b1_L, DO_coeffs_b1_R),
-        (DO_coeffs_b2_L, DO_coeffs_b2_R)
+        (DO_coeffs_b1_L, DO_coeffs_b1_R)
     ]
 
     pol_lab = np.array([0.0, 0.0, 1.0])
@@ -204,7 +203,7 @@ if __name__ == '__main__':
         
         # Create CSV with eKE and beta columns
         csv_data = np.column_stack((E_vals, beta_vals))
-        csv_filename = f"CuO_point_dipole_beta_D_{2*D:.2f}.csv"
+        csv_filename = f"no_deg_CuO_point_dipole_beta_D_{2*D:.2f}.csv"
         np.savetxt(csv_filename, csv_data, delimiter=",", 
                    header="eKE_eV,beta", comments="")
         print(f"Saved {csv_filename}")

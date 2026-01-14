@@ -15,13 +15,9 @@ def _safe_argument(values: np.ndarray) -> np.ndarray:
 
 
 def radial_function(order: float, k_mag: float, r_grid: np.ndarray) -> np.ndarray:
-    """Return the Gallup-style radial factor for a single continuum mode.
+    """Return the radial factor for a single continuum mode.
 
-    The legacy ``continuum.m`` implementation constructs the radial profile as
-    ``sqrt(r) * sqrt(pi/(2*k)) * J_{order+1/2}(k*r)`` before contracting with
-    the angular fields. Reproducing that expression verbatim keeps the Python
-    port consistent with the benchmark MATLAB workflow while remaining finite
-    at the nucleus.
+    Uses the standard spherical Bessel function j_l(kr) = sqrt(pi/(2kr)) * J_{l+1/2}(kr).
     """
 
     if not np.isfinite(k_mag) or k_mag <= 0.0:
@@ -29,9 +25,10 @@ def radial_function(order: float, k_mag: float, r_grid: np.ndarray) -> np.ndarra
 
     r_safe = _safe_argument(np.asarray(r_grid, dtype=float))
     kr = k_mag * r_safe
-    prefactor = np.sqrt(np.pi / (2.0 * k_mag))
+    # Standard spherical Bessel: j_l(kr) = sqrt(pi/(2*kr)) * J_{l+1/2}(kr)
+    prefactor = np.sqrt(np.pi / (2.0 * kr))
     bessel = jv(order + 0.5, kr)
-    radial = prefactor * np.sqrt(r_safe) * bessel
+    radial = prefactor * bessel
     result = np.array(radial, dtype=np.complex128)
     result = np.where(r_grid > _RADIAL_EPS, result, 0.0)
     return result

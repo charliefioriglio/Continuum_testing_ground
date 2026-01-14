@@ -78,7 +78,7 @@ def _omega_fields(D, lam, l_max, theta_grid, phi_grid):
     return data
 
 
-def build_continuum_mode(D, lam, N, E, X, Y, Z, l_max=10):
+def build_continuum_mode(D, lam, N, E, X, Y, Z, l_max=20):
     r_grid, theta_grid, phi_grid = cartesian_to_spherical(X, Y, Z)
     if E <= 0.0:
         return np.zeros_like(r_grid, dtype=np.complex128)
