@@ -127,3 +127,63 @@ Processing:
    4. Performs efficient orientational averaging (Loop: Orientation -> Grid -> Energy).
    5. Computes Beta = 2(Par - Perp) / (Par + 2*Perp).
 
+9. Plane Wave and Point Dipole Beta Calculations
+------------------------------------------------
+The beta parameter calculation now supports two models for the continuum wavefunction:
+1. Plane Wave Expansion (PWE) with Analytic Averaging.
+2. Point Dipole Model (continuum supported by a point dipole field).
+
+Usage:
+   $ ./beta_gen input_file output.csv [options]
+
+Options:
+   --pwe                Use Plane Wave Expansion (Analytic Averaging).
+                        This bypasses the numerical orientation grid and uses Clebsch-Gordan coefficients.
+                        
+   --point-dipole D     Use Point Dipole Model with dipole moment D (atomic units).
+                        Calculates directional wavefunctions mixing angular momenta up to l_max.
+                        Set D=0 to recover PWE results.
+                        
+   --l_max L            Set maximum angular momentum for expansion (default 3).
+                        Higher L required for converged Point Dipole results (e.g. 5 or 6).
+
+Examples:
+   # Standard PWE Beta (Analytic)
+   $ ./beta_gen cpp_input.dat beta_pwe.csv --pwe --l_max 4
+
+   # Point Dipole Beta (D=0.6)
+   $ ./beta_gen cpp_input.dat beta_pd.csv --point-dipole 0.6 --l_max 4
+10. Unified Input File Workflow
+-----------------------------------
+A unified driver script `src/python/run_job.py` allows you to define the entire workflow (Dyson generation, Calculation, Visualization) in a single JSON configuration file.
+
+Usage:
+   $ python3 src/python/run_job.py path/to/job.json
+
+Configuration Format (job.json):
+   {
+     "qchem_output": "path/to/qchem.out",
+     "dyson": {
+       "do_generation": true,
+       "indices": [2, 3],        // Or single index [0]
+       "grid_step": 0.3,
+       "output_bin": "dyson.bin"
+     },
+     "calculation": {
+       "do_calculation": true,
+       "type": "beta",           // "beta", "cross_section"
+       "model": "point_dipole",  // "point_dipole" or "pwe"
+       "dipole": 0.6,            // Dipole moment (au)
+       "l_max": 4,               // Max angular momentum
+       "ie": 1.778,              // Ionization Energy (eV)
+       "energies": [0.1, 0.5],   // List of eKE (eV)
+       "output_csv": "results.csv"
+     },
+     "visualization": {
+       "do_plot": true,
+       "isovalue": 0.02,
+       "view_axis": 2            // Optional: 0=X, 1=Y, 2=Z for 2D slice
+     }
+   }
+
+This script automates the execution of `dyson_io.py`, `beta_gen`, and `visualize.py`.

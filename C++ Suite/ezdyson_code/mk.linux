@@ -1,0 +1,32 @@
+CC = g++
+
+CCFLAGS = -O2 -std=c++11 -llapack -lblas -larmadillo -fopenmp -lgsl
+#-static
+
+#INC specify paths where libraries are installed: armadillo and gsl
+INC= -I/usr/local/include/  -I/opt/local/include/  -I/lib/include
+
+LSTD = -lstdc++
+LGSL = -L/lib -lgsl
+LARM = -L/lib -larmadillo
+LDFLAGS = $(LSTD) $(LGSL) $(LARM) -lm
+
+CODE = ezdyson_linux.exe
+
+CCCLASSES = aobasis.C cklm.C eikr.C complexno.C klmgrid.C gauss.C orbital.C xyzgrid.C ylm.C pad.C sph.C rotnmatr.C anglegrid.C clebsh_gordan_coeff.C
+CCMETHODS = aik_xml_parser.C readwrite.C tools.C wavetypes.C
+CCMAIN = main.C dyson_main.C
+CCSRC = $(CCMAIN) $(CCMETHODS) $(CCCLASSES)
+
+CCBINOBJ = $(CCSRC:%.C=%.o)
+BINOBJ = $(CCBINOBJ)
+
+$(CODE): $(BINOBJ)
+        $(CC) $^ $(CCFLAGS) -o $(CODE)
+
+%.o: %.C
+        $(CC) $(CCFLAGS) $(INC) -c $< -o $@
+
+clean:
+        $(RM) $(CODE) *.o
+

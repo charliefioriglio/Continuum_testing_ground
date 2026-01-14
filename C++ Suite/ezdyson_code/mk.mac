@@ -1,0 +1,41 @@
+#This does not compile on mac
+#CC = g++
+#But this does (or gcc-6 or higher)
+CC=gcc-mp-6
+
+CCFLAGS = -O3 -fopenmp
+#static option causes linking error: ld: library not found for -lcrt0.o.
+#This is problem with gcc explained here:
+#https://stackoverflow.com/questions/3801011/ld-library-not-found-for-lcrt0-o-on-osx-10-6-with-gcc-clang-static-flag/3801032
+#-Bstatic compiles, but does not run because of some dynamically linked libraries
+
+#INC specify paths where libraries are installed: armadillo and gsl
+INC= -I/usr/local/include/  -I/opt/local/include/  -DARMA_DONT_USE_WRAPPER 
+LSTD = -lstdc++
+#LGSL=-L/opt/local/lib -lgsl
+#Explict paths are needed for static linking:
+LGSL=/opt/local/lib/libgsl.a 
+#I have 2 different installations of armadilllo
+#LARMA=-L/opt/local/lib/ -larmadillo -lopenblas
+LARMA= -DARMA_DONT_USE_WRAPPER -L/usr/local/lib/ -larmadillo -L/opt/local/lib/ -lopenblas
+LDFLAGS = $(LSTD) $(LGSL) -Bstatic  $(LARMA) -lm
+
+CODE = ezdyson_mac.exe
+
+CCCLASSES = aobasis.C gauss.C orbital.C xyzgrid.C klmgrid.C cklm.C eikr.C complexno.C ylm.C pad.C sph.C rotnmatr.C anglegrid.C clebsh_gordan_coeff.C
+CCMETHODS = aik_xml_parser.C tools.C readwrite.C tools.C wavetypes.C
+CCMAIN = main.C dyson_main.C
+CCSRC = $(CCMAIN) $(CCMETHODS) $(CCCLASSES)
+
+CCBINOBJ = $(CCSRC:%.C=%.o)
+BINOBJ = $(CCBINOBJ)
+
+$(CODE): $(BINOBJ)
+	$(CC) $^ $(CCFLAGS) $(LDFLAGS) -o $(CODE)
+
+%.o: %.C
+	$(CC) $(CCFLAGS) $(INC) -c $< -o $@
+
+clean:
+	$(RM) $(CODE) *.o 
+

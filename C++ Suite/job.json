@@ -1,0 +1,31 @@
+{
+    "qchem_output": "reference materials/CuO_augccPVDZPP_dyson.out",
+    "dyson": {
+        "do_generation": true,
+        "indices": [
+            2,
+            3
+        ],
+        "grid_step": 0.5,
+        "padding": 8.0,
+        "output_bin": "cuo_test.bin"
+    },
+    "calculation": {
+        "do_calculation": true,
+        "type": "beta",
+        "model": "point_dipole",
+        "dipole": 0.6,
+        "l_max": 3,
+        "ie": 1.778,
+        "points": 50,
+        "energies": [
+            0.5
+        ],
+        "output_csv": "unified_results.csv"
+    },
+    "visualization": {
+        "do_plot": true,
+        "isovalue": 0.02,
+        "output_image": "cuo_test_plot.png"
+    }
+}

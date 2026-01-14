@@ -1,0 +1,165 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{physics}
+\usepackage{geometry}
+\usepackage{tikz}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{listings}
+\geometry{margin=1in}
+\bibliographystyle{unsrt}
+
+\title{Lab Notebook}
+\author{Charlie Fioriglio}
+\date{Spring 2026}
+
+\begin{document}
+
+\maketitle
+
+\section*{Photodetachment Code Suite}
+My aim is to make a software package for calculating photodetachment total and differential cross sections. This work will expand on the existing open source software \texttt{ezDyson} \cite{ezDyson_1} \cite{ezDyson_2} with customizable averaging, wavefunction and continuum visualizations, and advanced continuum functions options. Specifically, this code will allow the treatment of electron-molecule interactions in the continuum through both a point dipole potential \cite{Annie_point_dipole} and physical dipole potential \cite{Gallup_physical_dipole} \cite{Leaver_physical_dipole}. Both methods will be expanded on below.
+
+\section{Dyson Orbital Reader}
+The first necessary thing to create is a Dyson orbital reader. The code must be able to read Q-Chem Dyson Orbital output files and build the DO from an Atomic Orbital basis.
+
+\subsection{Q-Chem Output Parsing}
+The Dyson Orbital reader begins by parsing the Q-Chem output file to extract three key components: molecular geometry, basis set definitions, and Dyson orbital coefficients.
+
+\subsubsection{Geometry Extraction}
+The code searches for the \texttt{Standard Nuclear Orientation} block in the Q-Chem output. It reads the atomic symbols and their Cartesian coordinates (in Angstroms), converting them to Bohr radii for internal calculations.
+
+\subsubsection{Basis Set Parsing}
+The basis set information varies depending on the atom and shell type. The parser extracts the \texttt{Basis Set} block, identifying each atom and its associated shells (S, P, D, F, G, etc.).
+\begin{enumerate}
+    \item \textbf{Atom Identification:} The parser links basis blocks to specific atoms in the geometry.
+    \item \textbf{Shell Processing:} For each shell, the code reads the number of primitives, their exponents, and contraction coefficients.
+    \item \textbf{Pure vs. Cartesian Detection:} The parser checks the \texttt{purecart} setting in the output to determine if shells with $\ell \ge 2$ should be treated as pure spherical harmonics or Cartesian functions. This is critical for correctly enumerating the basis functions (e.g., 5 vs. 6 functions for D-shells).
+\end{enumerate}
+
+\subsubsection{Dyson Coefficient Extraction}
+The Dyson orbitals are defined as linear combinations of the basis functions. The parser locates the \texttt{Decomposition over AOs} sections. For each Dyson orbital (corresponding to a specific ionization transition), it reads the coefficients $C_\mu$ that weigh each basis function contribution. The code handles both "Left" and "Right" Dyson orbitals if biorthogonal sets are used, though typically the "Right" orbital is primary.
+
+\subsection{Dyson Orbital Construction Details}
+
+\subsubsection{Primitives and Basis Functions}
+The fundamental building blocks of the Dyson orbital are Cartesian Gaussian primitive functions. A primitive function centered at $\mathbf{R} = (x_0, y_0, z_0)$ with exponents $l_x, l_y, l_z$ and decay constant $\alpha$ is defined as:
+\begin{equation}
+    g_{ijk}(\mathbf{r}; \alpha, \mathbf{R}) = N(l_x, l_y, l_z, \alpha) \cdot (x-x_0)^{l_x} (y-y_0)^{l_y} (z-z_0)^{l_z} \exp\left(-\alpha |\mathbf{r} - \mathbf{R}|^2\right)
+\end{equation}
+The normalization constant $N$ ensures that the self-overlap of the primitive is unity. For a Cartesian Gaussian, it is given by:
+\begin{equation}
+    N(l_x, l_y, l_z, \alpha) = \left( \frac{2\alpha}{\pi} \right)^{3/4} \left( \frac{(4\alpha)^{\ell}}{(2l_x - 1)!! (2l_y - 1)!! (2l_z - 1)!!} \right)^{1/2}
+\end{equation}
+where $\ell = l_x + l_y + l_z$ is the total angular momentum quantum number, and $n!!$ denotes the double factorial.
+
+Contracted basis functions (Atomic Orbitals, AOs) are formed as linear combinations of these primitives:
+\begin{equation}
+    \phi_{AO}(\mathbf{r}) = N_{contraction} \sum_{p} c_p g_p(\mathbf{r})
+\end{equation}
+The contraction coefficients $c_p$ are read from the basis set definition. The code computes the overlap matrix $S_{pq} = \langle g_p | g_q \rangle$ of the primitives numerically or analytically, and then determines $N_{contraction}$ such that $\langle \phi_{AO} | \phi_{AO} \rangle = 1$. Specifically:
+\begin{equation}
+    N_{contraction} = \frac{1}{\sqrt{\sum_{p,q} c_p S_{pq} c_q}}
+\end{equation}
+
+\subsubsection{Pure vs. Cartesian Functions and Ordering}
+For shells with angular momentum $\ell \ge 2$, functions can be expressed in either Cartesian or Spherical Harmonic ("pure") representations.
+
+\subsubsubsection{Cartesian Shells}
+Cartesian shells contain all combinatoric possibilities of $(l_x, l_y, l_z)$ summing to $\ell$. The code enumerates these in the order of nested loops: $l_x$ from $\ell$ down to 0, and $l_y$ from $\ell - l_x$ down to 0.
+
+\subsubsubsection{Pure Shells}
+Pure shells correspond to the $2\ell + 1$ spherical harmonic functions. These are constructed as specific linear combinations of Cartesian primitives. The coefficients used in the Python code match the Q-Chem ordering (AOorder=1) derived from the reference C++ implementation.
+
+\textbf{D-Shells ($\ell=2$):}
+\begin{align*}
+    d_{xy} &= (1.0) \cdot xy \\
+    d_{yz} &= (1.0) \cdot yz \\
+    d_{z^2} &= (1.0) \cdot z^2 - 0.5 \cdot x^2 - 0.5 \cdot y^2 \\
+    d_{xz} &= (1.0) \cdot xz \\
+    d_{x^2-y^2} &= (\frac{\sqrt{3}}{2}) \cdot x^2 - (\frac{\sqrt{3}}{2}) \cdot y^2
+\end{align*}
+
+\textbf{F-Shells ($\ell=3$):}
+\begin{align*}
+    f_{1} &= 3\sqrt{\frac{5}{8}} x^2 y - \sqrt{\frac{5}{8}} y^3 \\
+    f_{2} &= xyz \\
+    f_{3} &= 4\sqrt{\frac{3}{8}} yz^2 - \sqrt{\frac{3}{8}} y^3 - \sqrt{\frac{3}{8}} x^2 y \\
+    f_{4} &= z^3 - 1.5 x^2 z - 1.5 y^2 z \\
+    f_{5} &= 4\sqrt{\frac{3}{8}} xz^2 - \sqrt{\frac{3}{8}} x^3 - \sqrt{\frac{3}{8}} xy^2 \\
+    f_{6} &= \frac{\sqrt{15}}{2} x^2 z - \frac{\sqrt{15}}{2} y^2 z \\
+    f_{7} &= \sqrt{\frac{5}{8}} x^3 - 3\sqrt{\frac{5}{8}} xy^2
+\end{align*}
+
+\textbf{G-Shells ($\ell=4$):}
+\begin{align*}
+    g_{1} &= \frac{\sqrt{35}}{2} x^3 y - \frac{\sqrt{35}}{2} xy^3 \\
+    g_{2} &=  3\sqrt{\frac{35}{8}} x^2 yz - \sqrt{\frac{35}{8}} y^3 z \\
+    g_{3} &= 3\sqrt{5} xyz^2 - \frac{\sqrt{5}}{2} x^3 y - \frac{\sqrt{5}}{2} xy^3 \\
+    g_{4} &= 4\sqrt{\frac{5}{8}} yz^3 - 3\sqrt{\frac{5}{8}} x^2 yz - 3\sqrt{\frac{5}{8}} y^3 z \\
+    g_{5} &= z^4 + \frac{3}{8} x^4 + \frac{3}{8} y^4 - 3 x^2 z^2 - 3 y^2 z^2 + 0.75 x^2 y^2 \\
+    g_{6} &= 4\sqrt{\frac{5}{8}} xz^3 - 3\sqrt{\frac{5}{8}} x^3 z - 3\sqrt{\frac{5}{8}} xy^2 z \\
+    g_{7} &= 1.5\sqrt{5} x^2 z^2 - 0.25\sqrt{5} x^4 - 1.5\sqrt{5} y^2 z^2 + 0.25\sqrt{5} y^4 \\
+    g_{8} &= \sqrt{\frac{35}{8}} x^3 z - 3\sqrt{\frac{35}{8}} xy^2 z \\
+    g_{9} &= \frac{\sqrt{35}}{8} x^4 + \frac{\sqrt{35}}{8} y^4 - \frac{3\sqrt{35}}{4} x^2 y^2
+\end{align*}
+
+\subsubsection{Dyson Orbital Assembly}
+The Molecular Orbital (MO) or Dyson Orbital (DO) is constructed by summing over all basis functions $\mu$:
+\begin{equation}
+    \Psi_{DO}(\mathbf{r}) = \sum_{\mu} C_\mu \phi_\mu(\mathbf{r})
+\end{equation}
+The code iterates through atoms and shells, generating the appropriate Cartesian or Pure functions for each shell, and applies the corresponding MO coefficients $C_\mu$ read from the Q-Chem output.
+
+Once built on a 3D grid, the total norm is checked numerically:
+\begin{equation}
+    \text{Norm} = \sum_{ijk} |\Psi(x_i, y_j, z_k)|^2 dV
+\end{equation}
+If the norm deviates significantly from 1, the wavefunction is renormalized.
+
+Finally, the orbital centroid is calculated to center the grid for visualization or further processing:
+\begin{equation}
+    \mathbf{R}_{cent} = \frac{\langle \Psi | \mathbf{r} | \Psi \rangle}{\langle \Psi | \Psi \rangle}
+\end{equation}
+The grid coordinates are then shifted such that $\mathbf{R}_{cent}$ is at the origin if recentering is enabled.
+
+\subsection{Visualization}
+The visualization module generates an isosurface of the 3D Dyson Orbital. It creates a uniform grid spanning the molecular extent, evaluates wavefunction values $\Psi(\mathbf{r})$ at each grid point, and likely exports this data for plotting (e.g., using Plotly or Matplotlib isosurfaces). The positive and negative phases of the wavefunction are typically colored differently (e.g., red/blue) to indicate phase information.
+
+\section{Cross Section Calculations}
+Total photodetachment cross sections measure the probability of electron detachment for a particular initial and final molecule (reflected in the Dyson orbital) and a given photon energy. The gross section for a detachment angle $\alpha$ is given by
+\begin{equation}
+    \sigma[\alpha] = \frac{8\pi kE}{c} \sum_{klm}|C_{klm}[\alpha]|^2
+\end{equation}
+where E is the photon energy, c is the speed of light, k is the electron momentum
+\begin{equation}
+    k = \sqrt{2m_eeKE}
+\end{equation}
+and
+\begin{equation}
+    C_{klm}[\alpha] = i^l \int \phi^d(\textbf{r})r_{\alpha}\psi^{el}_{klm}d\textbf{r}
+\end{equation}
+$\psi^{el}_{klm}$ is the $l,m$ component of the plane wave expansion of the continuum function.
+\subsection{Transition Operator}
+$r_\alpha$ is the $\alpha$ component of the transition dipole operator \textbf{$\mu$}.
+\begin{equation}
+    r_\alpha = \hat{\alpha} \cdot \vec{r_{el}}
+\end{equation}
+For the total cross section, only $\alpha = x,\ y, \ z$ need to be considered and averaged over.
+\subsection{The Continuum}
+\subsubsection{Plane Wave Expansion}
+\begin{equation}
+    \psi^{el}_{klm} = Y_{lm}({\hat{r}}) R_l(kr)
+\end{equation}
+what $R_l$ is a spherical Bessel function to order $l$.
+\subsection{Calculating Values}
+To execute the sum in (8) you will need to go over $x$, $y$, and $z$ polarizations, from 0 to $l_{max}$ (5 should be sufficient) for each polarization, and from $-l$ to $l$ for each l. Execute each integral and add them for a $k$. All values are in atomic units. Instead of $|C_{klm}|^2$, we used the more accurate $(C^{L}_{klm})^*C^{R}_{klm}$ where $L$ and $R$ reference the Dyson orbitals used.
+
+For the final sigma values divide by three to account for the averaging over $xyz$ and multiply by the Dyson orbital norms $norm_L \times norm_R$. Spin degeneracy will also need to be accounted for, this will introduce a factor of two, if applicable.
+\subsection{Relative Cross Sections}
+For relative cross sections, one will need the vibrational transitions and FCFs of the neutral. The relative cross sections now have $k_v$ where v is the vibrational channel, and $\sigma_{{rel}_v} = FCF_v^2\frac{\sigma_v}{\sum_{v'=0}^{v'=v_{max}}\sigma_{v'}}$
+
+\bibliography{references}
+
+\end{document}

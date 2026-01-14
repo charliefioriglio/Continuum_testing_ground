@@ -1,0 +1,30 @@
+#this compiles on mordor
+CC = gcc
+
+CCFLAGS = -O3 -fopenmp -I/home/sgozem/bin/armadillo-9.900.1/build/include -I/opt/gsl/2.5/gnu/include
+
+LSTD = -lstdc++
+LGSL = -I/opt/gsl/2.5/gnu/include -L/opt/gsl/2.5/gnu/lib -lgsl
+LARM = -L/home/sgozem/bin/armadillo-9.900.1/build/lib64 -I/home/sgozem/bin/armadillo-9.900.1/build/include -larmadillo
+LDFLAGS = $(LSTD) $(LGSL) $(LARM) -lm
+#Does not find armadillo on mordor. It is in /lib
+
+CODE = ezdyson_comet.exe
+
+CCCLASSES = aobasis.C cklm.C eikr.C complexno.C klmgrid.C gauss.C orbital.C xyzgrid.C ylm.C pad.C sph.C rotnmatr.C anglegrid.C clebsh_gordan_coeff.C
+CCMETHODS =  aik_xml_parser.C  readwrite.C tools.C wavetypes.C
+CCMAIN = main.C dyson_main.C
+CCSRC = $(CCMAIN) $(CCMETHODS) $(CCCLASSES)
+
+CCBINOBJ = $(CCSRC:%.C=%.o)
+BINOBJ = $(CCBINOBJ)
+
+$(CODE): $(BINOBJ)
+	$(CC) $^ $(CCFLAGS) $(LDFLAGS) -o $(CODE)
+
+%.o: %.C
+	$(CC) $(CCFLAGS) -c $< -o $@
+
+clean:
+	$(RM) $(CODE) *.o 
+

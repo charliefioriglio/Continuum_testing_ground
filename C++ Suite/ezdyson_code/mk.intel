@@ -1,0 +1,32 @@
+#This works on fluffy
+CC = icpc
+
+CCFLAGS = -static -O3 -ip -openmp -I/home/users/sgozem/bin/gsl/include -L/home/users/sgozem/bin/gsl/lib -lgsl -lgslcblas 
+
+LXML = -lexpat
+#This compiles on fluffy, but fails during run-time because cannot load arma shared library
+#Pavel says need to set LD_LIBRARY_PATH 
+#LARMA= -L/home/users/pokhilko/armadillo/armadillo-7.950.1-build -larmadillo
+LFLAGS = $(LXML) $(LARMA) -lm 
+
+CODE = exedys
+
+CCCLASSES = aobasis.C cklm.C complexno.C klmgrid.C gauss.C orbital.C xyzgrid.C ylm.C pad.C sph.C eikr.C clebsh_gordan_coeff.C
+CCMETHODS = readwrite.C simple_xml_parser.C tools.C wavetypes.C anglegrid.C rotnmatr.C
+CCMAIN = main.C dyson_main.C
+CCSRC = $(CCMAIN) $(CCMETHODS) $(CCCLASSES)
+
+CCBINOBJ = $(CCSRC:%.C=%.o)
+BINOBJ = $(CCBINOBJ)
+
+$(CODE): $(BINOBJ)
+	$(CC) $^ $(LFLAGS) $(CCFLAGS) -o $(CODE)
+
+%.o: %.C
+	$(CC) $(CCFLAGS) -c $< -o $@
+
+clean:
+	rm $(CODE) *.o 
+
+
+
